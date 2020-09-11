@@ -1,8 +1,8 @@
 {
-  "name": "setup-msbuild",
+  "name": "gha-setup-vcpp-build-tools",
   "version": "1.0.1",
   "private": true,
-  "description": "Helps set up specific MSBuild tool into PATH for later usage.",
+  "description": "Set up VC build tools environment.",
   "main": "lib/main.js",
   "scripts": {
     "build": "tsc",
@@ -15,7 +15,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/microsoft/setup-msbuild.git"
+    "url": "git+https://github.com/elprans/gha-setup-vcpp-build-tools.git"
   },
   "keywords": [
     "actions",
@@ -26,6 +26,9 @@
     "vstest"
   ],
   "author": "Microsoft",
+  "contributors": [
+    "Elvis Pranskevichus"
+  ],
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^1.2.0",
@@ -34,7 +37,7 @@
   },
   "devDependencies": {
     "@types/jest": "^24.0.23",
-    "@types/node": "^12.12.25",
+    "@types/node": "^12.12.58",
     "@typescript-eslint/parser": "^2.8.0",
     "@zeit/ncc": "^0.20.5",
     "eslint": "^5.16.0",

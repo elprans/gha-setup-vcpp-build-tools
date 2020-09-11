@@ -1,5 +1,7 @@
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
+import {StringDecoder} from 'string_decoder'
+import * as os from 'os'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as io from '@actions/io'
@@ -9,10 +11,16 @@ const IS_WINDOWS = process.platform === 'win32'
 const VS_VERSION = core.getInput('vs-version') || 'latest'
 const VSWHERE_PATH = core.getInput('vswhere-path')
 
+// prettier-ignore
+let VSWHERE_EXEC = [
+  '-latest',
+  '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+  '-property', 'installationPath',
+  '-products', '*'
+].join(' ')
 // if a specific version of VS is requested
-let VSWHERE_EXEC = '-products * -requires Microsoft.Component.MSBuild -property installationPath -latest '
 if (VS_VERSION !== 'latest') {
-  VSWHERE_EXEC += `-version "${VS_VERSION}" `
+  VSWHERE_EXEC += `-version "${VS_VERSION}"`
 }
 
 core.debug(`Execution arguments: ${VSWHERE_EXEC}`)
@@ -58,52 +66,91 @@ async function run(): Promise<void> {
 
     core.debug(`Full tool exe: ${vswhereToolExe}`)
 
-    let foundToolPath = ''
+    let foundVCVarsPath = ''
     const options: ExecOptions = {}
     options.listeners = {
       stdout: (data: Buffer) => {
         const installationPath = data.toString().trim()
-        core.debug(`Found installation path: ${installationPath}`)
 
-        let toolPath = path.join(
-          installationPath,
-          'MSBuild\\Current\\Bin\\MSBuild.exe'
-        )
-
-        core.debug(`Checking for path: ${toolPath}`)
-        if (!fs.existsSync(toolPath)) {
-          toolPath = path.join(
-            installationPath,
-            'MSBuild\\15.0\\Bin\\MSBuild.exe'
+        if (installationPath === '') {
+          core.setFailed(
+            'Could not locate suitable Visual Studio installation.'
           )
-
-          core.debug(`Checking for path: ${toolPath}`)
-          if (!fs.existsSync(toolPath)) {
-            return
-          }
+          return
         }
 
-        foundToolPath = toolPath
+        core.debug(`Found VS installation path: ${installationPath}`)
+
+        const vcvarsPath = path.join(
+          installationPath,
+          'VC\\Auxiliary\\Build\\vcvarsall.bat'
+        )
+
+        core.debug(`Checking for path: ${vcvarsPath}`)
+        if (!fs.existsSync(vcvarsPath)) {
+          core.setFailed(
+            `Unable to locate vcvarsall.bat: ${vcvarsPath} does not exist`
+          )
+          return
+        }
+
+        foundVCVarsPath = vcvarsPath
       }
     }
 
-    // execute the find putting the result of the command in the options foundToolPath
-    await exec.exec(`"${vswhereToolExe}" ${VSWHERE_EXEC}`, [], options)
+    let exitCode = await exec.exec(
+      `"${vswhereToolExe}" ${VSWHERE_EXEC}`,
+      [],
+      options
+    )
 
-    if (!foundToolPath) {
-      core.setFailed('Unable to find MSBuild.')
+    if (exitCode !== 0) {
+      core.setFailed('Could not locate suitable Visual Studio installation.')
       return
     }
 
-    // extract the folder location for the tool
-    const toolFolderPath = path.dirname(foundToolPath)
+    if (!foundVCVarsPath) {
+      return
+    }
 
-    // set the outputs for the action to the folder path of msbuild
-    core.setOutput('msbuildPath', toolFolderPath)
+    const newEnvironment = new Map()
+    let vcvarsErr = ''
 
-    // add tool path to PATH
-    core.addPath(toolFolderPath)
-    core.debug(`Tool path added to PATH: ${toolFolderPath}`)
+    options.listeners = {
+      stdout: (data: Buffer) => {
+        const decoder = new StringDecoder('utf16le')
+        const envBlock = decoder.write(data).trim()
+
+        for (const line of envBlock.split(os.EOL)) {
+          const [name, val] = line.split('=', 2)
+          newEnvironment.set(name, val)
+        }
+      },
+
+      stderr: (data: Buffer) => {
+        vcvarsErr = data.toString()
+      }
+    }
+
+    options.silent = true
+    exitCode = await exec.exec(
+      `cmd /u /c "${foundVCVarsPath}" x64 >nul && set`,
+      [],
+      options
+    )
+
+    if (exitCode !== 0 || newEnvironment.size === 0) {
+      core.setFailed(
+        `Could not call vcvarsall.bat or parse environment: ${vcvarsErr}`
+      )
+      return
+    }
+
+    for (const [key, value] of newEnvironment) {
+      if (process.env[key] !== value) {
+        core.exportVariable(key, value)
+      }
+    }
   } catch (error) {
     core.setFailed(error.message)
   }

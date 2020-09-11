@@ -972,16 +972,24 @@ var __importStar = (this && this.__importStar) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const core = __importStar(__webpack_require__(470));
 const exec = __importStar(__webpack_require__(986));
+const string_decoder_1 = __webpack_require__(304);
+const os = __importStar(__webpack_require__(87));
 const fs = __importStar(__webpack_require__(747));
 const path = __importStar(__webpack_require__(622));
 const io = __importStar(__webpack_require__(1));
 const IS_WINDOWS = process.platform === 'win32';
 const VS_VERSION = core.getInput('vs-version') || 'latest';
 const VSWHERE_PATH = core.getInput('vswhere-path');
+// prettier-ignore
+let VSWHERE_EXEC = [
+    '-latest',
+    '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+    '-property', 'installationPath',
+    '-products', '*'
+].join(' ');
 // if a specific version of VS is requested
-let VSWHERE_EXEC = '-products * -requires Microsoft.Component.MSBuild -property installationPath -latest ';
 if (VS_VERSION !== 'latest') {
-    VSWHERE_EXEC += `-version "${VS_VERSION}" `;
+    VSWHERE_EXEC += `-version "${VS_VERSION}"`;
 }
 core.debug(`Execution arguments: ${VSWHERE_EXEC}`);
 function run() {
@@ -1017,37 +1025,59 @@ function run() {
                 return;
             }
             core.debug(`Full tool exe: ${vswhereToolExe}`);
-            let foundToolPath = '';
+            let foundVCVarsPath = '';
             const options = {};
             options.listeners = {
                 stdout: (data) => {
                     const installationPath = data.toString().trim();
-                    core.debug(`Found installation path: ${installationPath}`);
-                    let toolPath = path.join(installationPath, 'MSBuild\\Current\\Bin\\MSBuild.exe');
-                    core.debug(`Checking for path: ${toolPath}`);
-                    if (!fs.existsSync(toolPath)) {
-                        toolPath = path.join(installationPath, 'MSBuild\\15.0\\Bin\\MSBuild.exe');
-                        core.debug(`Checking for path: ${toolPath}`);
-                        if (!fs.existsSync(toolPath)) {
-                            return;
-                        }
+                    if (installationPath === '') {
+                        core.setFailed('Could not locate suitable Visual Studio installation.');
+                        return;
                     }
-                    foundToolPath = toolPath;
+                    core.debug(`Found VS installation path: ${installationPath}`);
+                    const vcvarsPath = path.join(installationPath, 'VC\\Auxiliary\\Build\\vcvarsall.bat');
+                    core.debug(`Checking for path: ${vcvarsPath}`);
+                    if (!fs.existsSync(vcvarsPath)) {
+                        core.setFailed(`Unable to locate vcvarsall.bat: ${vcvarsPath} does not exist`);
+                        return;
+                    }
+                    foundVCVarsPath = vcvarsPath;
                 }
             };
-            // execute the find putting the result of the command in the options foundToolPath
-            yield exec.exec(`"${vswhereToolExe}" ${VSWHERE_EXEC}`, [], options);
-            if (!foundToolPath) {
-                core.setFailed('Unable to find MSBuild.');
+            let exitCode = yield exec.exec(`"${vswhereToolExe}" ${VSWHERE_EXEC}`, [], options);
+            if (exitCode !== 0) {
+                core.setFailed('Could not locate suitable Visual Studio installation.');
                 return;
             }
-            // extract the folder location for the tool
-            const toolFolderPath = path.dirname(foundToolPath);
-            // set the outputs for the action to the folder path of msbuild
-            core.setOutput('msbuildPath', toolFolderPath);
-            // add tool path to PATH
-            core.addPath(toolFolderPath);
-            core.debug(`Tool path added to PATH: ${toolFolderPath}`);
+            if (!foundVCVarsPath) {
+                return;
+            }
+            const newEnvironment = new Map();
+            let vcvarsErr = '';
+            options.listeners = {
+                stdout: (data) => {
+                    const decoder = new string_decoder_1.StringDecoder('utf16le');
+                    const envBlock = decoder.write(data).trim();
+                    for (const line of envBlock.split(os.EOL)) {
+                        const [name, val] = line.split('=', 2);
+                        newEnvironment.set(name, val);
+                    }
+                },
+                stderr: (data) => {
+                    vcvarsErr = data.toString();
+                }
+            };
+            options.silent = true;
+            exitCode = yield exec.exec(`cmd /u /c "${foundVCVarsPath}" x64 >nul && set`, [], options);
+            if (exitCode !== 0 || newEnvironment.size === 0) {
+                core.setFailed(`Could not call vcvarsall.bat or parse environment: ${vcvarsErr}`);
+                return;
+            }
+            for (const [key, value] of newEnvironment) {
+                if (process.env[key] !== value) {
+                    core.exportVariable(key, value);
+                }
+            }
         }
         catch (error) {
             core.setFailed(error.message);
@@ -1056,6 +1086,13 @@ function run() {
 }
 run();
 
+
+/***/ }),
+
+/***/ 304:
+/***/ (function(module) {
+
+module.exports = require("string_decoder");
 
 /***/ }),
 
